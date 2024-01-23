@@ -45,3 +45,12 @@ export const deleteAllVideoFiles = async () => {
     }
   } catch (error) {}
 };
+
+export const writeFile = async (data) => {
+  const fileListPath = `${RNFS.CachesDirectoryPath}/filelist.txt`;
+  RNFS.writeFile(fileListPath, data, 'utf8')
+    .then(() => {})
+    .catch((error) => {
+      console.error('Failed to write file list:', error);
+    });
+};

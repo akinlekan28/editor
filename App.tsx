@@ -7,26 +7,26 @@ import {
   SafeAreaView,
   Pressable,
   ActivityIndicator,
+  Image,
 } from 'react-native';
 import { launchImageLibrary } from 'react-native-image-picker';
 import Video from 'react-native-video';
-import { Ionicons, FontAwesome6, Entypo, Feather } from '@expo/vector-icons';
 import FFmpegWrapper from '@/lib/FFmpegWrapper';
 import DocumentPicker from 'react-native-document-picker';
-import { shareFile, deleteFile, deleteAllVideoFiles } from '@/utils';
+import { shareFile, deleteFile, deleteAllVideoFiles, writeFile } from '@/utils';
 import {
-  SCREEN_WIDTH,
   SCREEN_HEIGHT,
   FRAME_PER_SEC,
-  TILE_HEIGHT,
   TILE_WIDTH,
   DURATION_WINDOW_WIDTH,
   POPLINE_POSITION,
-  DURATION_WINDOW_BORDER_WIDTH,
   FRAME_STATUS,
 } from './src/utils/Constants';
 import Controls from '@/components/Controls';
 import Scrubber, { Frame } from '@/components/Scrubber';
+import PresetOne from '@/components/PresetOne';
+import PresetTwo from '@/components/PresetTwo';
+import PhotoBox from '@/components/PhotoBox';
 
 export default function App() {
   const video = useRef(null);
@@ -40,6 +40,9 @@ export default function App() {
   const [progress, setProgress] = useState<number>(0);
   const [convertedAsset, setConvertedAsset] = useState(null);
   const [selectedVideo, setSelectedVideo] = useState(null);
+  const [originalPath, setOriginalPath] = useState<string>('');
+  const [startTime, setStartTime] = useState<number>(0);
+  const [selectedPictures, setSelectedPictures] = useState([]);
 
   const openPicker = async () => {
     setLoading(true);
@@ -56,8 +59,8 @@ export default function App() {
       deleteFrames();
       setSelectedVideo(assets[0]);
       setClipSelected(assets[0].uri);
-      setLoading(false);
     }
+    setLoading(false);
   };
 
   const handleVideoUploaded = (videoAssetLoaded) => {
@@ -102,14 +105,21 @@ export default function App() {
   const handleOnTouchEnd = () => {
     setPaused(false);
   };
+
   const handleOnTouchStart = () => {
     setPaused(true);
   };
 
   const handleOnScroll = ({ nativeEvent }) => {
-    const playbackTime = getPopLinePlayTime(nativeEvent.contentOffset.x);
+    const scrollOffset = nativeEvent.contentOffset.x;
+    const playbackTime = getPopLinePlayTime(scrollOffset);
+    const totalScrubberWidth = TILE_WIDTH * frames.length;
+    const videoDuration = selectedVideo.duration;
+    const scrubberDurationPerPixel = videoDuration / totalScrubberWidth;
+    const calculatedStartTime = scrubberDurationPerPixel * scrollOffset;
     video?.current?.seek(playbackTime);
-    setFramesLineOffset(nativeEvent.contentOffset.x);
+    setStartTime(calculatedStartTime);
+    setFramesLineOffset(scrollOffset);
     setUserScrubbing(true);
   };
 
@@ -160,9 +170,63 @@ export default function App() {
         setConvertedAsset(filePath);
         setMuted(false);
         setClipSelected(`file://${filePath}`);
+        setOriginalPath(`file://${filePath}`);
       },
       (error) => {
         console.log('error', error);
+      },
+      (time) => {
+        const progressPercentage = Math.min(
+          (time / (selectedVideo.duration * 1000)) * 100,
+          100
+        );
+        setProgress(progressPercentage);
+      }
+    );
+  };
+
+  const increaseSpeed = () => {
+    FFmpegWrapper.speed2x(
+      selectedVideo.fileName,
+      selectedVideo.uri,
+      (filePath) => {
+        setConvertedAsset(filePath);
+        setMuted(false);
+        setClipSelected(`file://${filePath}`);
+        setOriginalPath(`file://${filePath}`);
+      },
+      (error) => {
+        console.log('error', error);
+      },
+      (time) => {
+        const progressPercentage = Math.min(
+          (time / (selectedVideo.duration * 1000)) * 100,
+          100
+        );
+        setProgress(progressPercentage);
+      }
+    );
+  };
+
+  const cutVideoSegment = () => {
+    let duration = 30;
+    if (startTime + duration > selectedVideo.duration) {
+      duration = selectedVideo.duration - startTime;
+    }
+
+    FFmpegWrapper.cutSegment(
+      selectedVideo.fileName,
+      selectedVideo.uri,
+      startTime.toFixed(2),
+      duration.toFixed(2),
+      (filePath) => {
+        setConvertedAsset(filePath);
+        setMuted(false);
+        setClipSelected(`file://${filePath}`);
+        setOriginalPath(`file://${filePath}`);
+      },
+      (error) => {
+        console.error('Failed to cut segment:', error);
       },
       (time) => {
         const progressPercentage = Math.min(
@@ -193,6 +257,7 @@ export default function App() {
     if (edited) {
       await deleteFile(clipSelected);
     }
+    await deleteFile(originalPath);
     await deleteAllVideoFiles();
     setSelectedVideo(null);
     setMuted(false);
@@ -212,7 +277,7 @@ export default function App() {
 
       FFmpegWrapper.addWatermark(
         selectedVideo.fileName,
-        convertedAsset,
+        originalPath,
         assets[0].uri,
         (filePath) => {
           setConvertedAsset(filePath);
@@ -233,24 +298,89 @@ export default function App() {
     }
   };
 
+  const loadPictures = async () => {
+    const result = await launchImageLibrary({
+      mediaType: 'photo',
+      assetRepresentationMode: 'current',
+      quality: 0.7,
+      selectionLimit: 7,
+    });
+
+    if (result?.assets !== undefined) {
+      const { assets } = result;
+      setSelectedPictures(assets);
+      const displayDuration = 2;
+      const fileListContent = assets
+        .map((image) => `file '${image.uri}'\nduration ${displayDuration}`)
+        .join('\n');
+      await writeFile(fileListContent);
+    }
+  };
+
+  const createSlideShow = async () => {
+    try {
+      const result = await DocumentPicker.pickSingle({
+        type: DocumentPicker.types.audio,
+      });
+      if (result?.uri !== null || result?.uri !== undefined) {
+        setMuted(true);
+        FFmpegWrapper.createSlideShow(
+          result?.uri,
+          (filePath) => {
+            setSelectedVideo({ uri: `file://${filePath}` });
+            setConvertedAsset(filePath);
+            setMuted(false);
+            setClipSelected(`file://${filePath}`);
+            setSelectedPictures([]);
+          },
+          (error) => {
+            console.log('error', error);
+          },
+          (time) => {
+            const progressPercentage = Math.min(
+              (time / (selectedVideo.duration * 1000)) * 100,
+              100
+            );
+            setProgress(progressPercentage);
+          }
+        );
+      }
+    } catch (error) {}
+  };
+
   return (
     <SafeAreaView style={styles.container}>
       <StatusBar style="auto" />
       <View style={styles.wrapper}>
         <Text style={styles.mainText}>Azzuu Demo</Text>
         <View style={styles.canvasLayout}>
-          <View style={selectedVideo == null ? styles.pickerContainer : {}}>
+          <View
+            style={
+              selectedVideo == null || selectedPictures.length == 0
+                ? styles.pickerContainer
+                : {}
+            }
+          >
             {selectedVideo == null ? (
               <>
                 {loading ? (
                   <ActivityIndicator size="small" color="#fff" />
-                ) : (
-                  <Pressable
-                    style={styles.pickerButton}
-                    onPress={() => openPicker()}
-                  >
-                    <Text style={styles.buttonText}>Select a video</Text>
-                  </Pressable>
+                ) : selectedPictures.length > 0 ? null : (
+                  <View style={styles.row}>
+                    <Pressable
+                      style={styles.pickerButton}
+                      onPress={() => openPicker()}
+                    >
+                      <Text style={styles.buttonText}>Select a video</Text>
+                    </Pressable>
+                    <View style={{ marginHorizontal: 8 }} />
+                    <Pressable
+                      style={styles.pickerButton}
+                      onPress={() => loadPictures()}
+                    >
+                      <Text style={styles.buttonText}>Select photos</Text>
+                    </Pressable>
+                  </View>
                 )}
               </>
             ) : (
@@ -300,53 +430,30 @@ export default function App() {
                 )}
               </>
             )}
+
+            <PhotoBox
+              selectedPictures={selectedPictures}
+              onPress={() => createSlideShow()}
+            />
           </View>
         </View>
         {selectedVideo && (
           <>
             {selectedVideo !== null && convertedAsset == null ? (
-              <View style={styles.editCard}>
-                <Pressable
-                  style={styles.attachedMusic}
-                  onPress={() => trashEditing(false)}
-                >
-                  <FontAwesome6 name="trash" size={19} color="red" />
-                </Pressable>
-
-                <Pressable
-                  style={styles.attachedMusic}
-                  onPress={() => pickMusic()}
-                >
-                  <Ionicons name="musical-notes" size={24} color="#0B60B0" />
-                </Pressable>
-                <Pressable
-                  style={styles.attachedMusic}
-                  onPress={() => openPicker()}
-                >
-                  <Entypo name="video" size={24} color="#A535B7" />
-                </Pressable>
-              </View>
+              <PresetOne
+                trashEditing={() => trashEditing(false)}
+                pickMusic={() => pickMusic()}
+                openPicker={() => openPicker()}
+                increaseSpeed={() => increaseSpeed()}
+                cutVideoSegment={() => cutVideoSegment()}
+              />
             ) : (
-              <View style={styles.editCard}>
-                <Pressable
-                  style={styles.attachedMusic}
-                  onPress={() => trashEditing(true)}
-                >
-                  <FontAwesome6 name="trash" size={19} color="red" />
-                </Pressable>
-                <Pressable
-                  style={styles.attachedMusic}
-                  onPress={() => download()}
-                >
-                  <Feather name="share-2" size={24} color="#05BCEE" />
-                </Pressable>
-                <Pressable
-                  style={styles.attachedMusic}
-                  onPress={() => addWatermark()}
-                >
-                  <Ionicons name="water" size={24} color="#392467" />
-                </Pressable>
-              </View>
+              <PresetTwo
+                trashEditing={() => trashEditing(false)}
+                download={() => download()}
+                addWatermark={() => addWatermark()}
+                increaseSpeed={() => increaseSpeed()}
+              />
             )}
             <View style={{ marginTop: 70 }} />
             <Controls
@@ -393,13 +500,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     borderRadius: 8,
   },
-  attachedMusic: {
-    alignItems: 'center',
-    borderRadius: 100,
-    paddingVertical: 6,
-    paddingHorizontal: 5,
-    marginBottom: 20,
-  },
   buttonText: {
     color: '#fff',
     fontSize: 15,
@@ -408,91 +508,7 @@ const styles = StyleSheet.create({
     height: 0.5 * SCREEN_HEIGHT,
     width: '100%',
   },
-  editCard: {
-    position: 'absolute',
-    right: 10,
-    top: 60,
-    paddingVertical: 10,
-    paddingHorizontal: 5,
-    borderRadius: 30,
-    marginTop: 5,
-    flexDirection: 'column',
-  },
-  durationWindowAndFramesLineContainer: {
-    top: -DURATION_WINDOW_BORDER_WIDTH,
-    width: SCREEN_WIDTH,
-    height: TILE_HEIGHT + DURATION_WINDOW_BORDER_WIDTH * 2,
-    justifyContent: 'center',
-    zIndex: 10,
-  },
-  durationWindow: {
-    width: DURATION_WINDOW_WIDTH,
-    borderColor: 'yellow',
-    borderWidth: DURATION_WINDOW_BORDER_WIDTH,
-    borderRadius: 4,
-    height: TILE_HEIGHT + DURATION_WINDOW_BORDER_WIDTH * 2,
-    alignSelf: 'center',
-  },
-  durationLabelContainer: {
-    backgroundColor: 'yellow',
-    alignSelf: 'center',
-    top: -26,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderTopLeftRadius: 4,
-    borderTopRightRadius: 4,
-    zIndex: 30,
-  },
-  durationLabel: {
-    color: 'rgba(0,0,0,0.6)',
-    fontWeight: '700',
-  },
-  popLineContainer: {
-    position: 'absolute',
-    alignSelf: POPLINE_POSITION === '50%' && 'center',
-    zIndex: 25,
-  },
-  popLine: {
-    width: 3,
-    height: TILE_HEIGHT,
-    backgroundColor: 'yellow',
-  },
-  durationWindowLeftBorder: {
-    position: 'absolute',
-    width: DURATION_WINDOW_BORDER_WIDTH,
-    alignSelf: 'center',
-    height: TILE_HEIGHT + DURATION_WINDOW_BORDER_WIDTH * 2,
-    left: SCREEN_WIDTH / 2 - DURATION_WINDOW_WIDTH / 2,
-    borderTopLeftRadius: 8,
-    borderBottomLeftRadius: 8,
-    backgroundColor: 'yellow',
-    zIndex: 25,
-  },
-  durationWindowRightBorder: {
-    position: 'absolute',
-    width: DURATION_WINDOW_BORDER_WIDTH,
-    right: SCREEN_WIDTH - SCREEN_WIDTH / 2 - DURATION_WINDOW_WIDTH / 2,
-    height: TILE_HEIGHT + DURATION_WINDOW_BORDER_WIDTH * 2,
-    borderTopRightRadius: 8,
-    borderBottomRightRadius: 8,
-    backgroundColor: 'yellow',
-    zIndex: 25,
-  },
-  framesLine: {
-    width: SCREEN_WIDTH,
-    position: 'absolute',
-  },
-  loadingFrame: {
-    width: TILE_WIDTH,
-    height: TILE_HEIGHT,
-    backgroundColor: 'rgba(0,0,0,0.05)',
-    borderColor: 'rgba(0,0,0,0.1)',
-    borderWidth: 1,
-  },
-  prependFrame: {
-    width: SCREEN_WIDTH / 2 - DURATION_WINDOW_WIDTH / 2,
-  },
-  appendFrame: {
-    width: SCREEN_WIDTH / 2 - DURATION_WINDOW_WIDTH / 2,
+  row: {
+    flexDirection: 'row',
   },
 });
